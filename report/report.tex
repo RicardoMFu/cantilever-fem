@@ -30,7 +30,7 @@
  backgroundcolor=\color{ink!4},frame=single,rulecolor=\color{ink!20},showstringspaces=false}
 \title{\vspace{-1.2em}\color{ink}\LARGE 二维悬臂梁：从单元刚度到节点位移\\[.4em]
 \large 三套网格：线弹性与J2弹塑性分析}
-\author{}\date{2026年11月1日}
+\author{\small 求解代码见 GitHub：\href{https://github.com/RicardoMFu/cantilever-fem}{\texttt{RicardoMFu/cantilever-fem}}}\date{2026年11月1日}
 \begin{document}
 \maketitle\vspace{-2em}
 
@@ -448,33 +448,115 @@ $\varepsilon_{zz}=\varepsilon^e_{zz}+\varepsilon^p_{zz}=0$；两项可以分别�
 $f\le0$表示允许应力状态；弹性试算$f^{\rm tr}>0$时需产生塑性流动，使更新后的应力回到屈服面。
 该条件不是由平衡方程推出，而是材料屈服及硬化假设。
 
-\subsection{材料更新与整体平衡}
-每一步先固定上一收敛步的$\varepsilon^p_n,\alpha_n$，用当前位移算总应变并进行弹性试算。
-塑性时采用径向返回：
+\subsection{加载步与Newton试算}
+$n$表示已收敛的加载步，$k$表示下一步内的Newton试算次数。两者不能混用。
+例如右端位移从$-0.34$增至$-0.35\,\mathrm m$，这是一次加载；
+在$-0.35\,\mathrm m$下反复修改内部自由节点位移，只是在寻找同一加载状态的平衡解。
+右端规定值在这些试算中始终不变。
+
+第$n$步结束后，保存位移$\mathbf d_n$及每个高斯点的材料状态
+$\varepsilon^p_n,\alpha_n$。第$n+1$步的每次试算均执行
 \[
-\Delta\alpha=\frac{q^{\rm tr}-\sigma_{y0}-H\alpha_n}{3G+H},\qquad
-\Delta\boldsymbol\varepsilon^p=\tfrac32\Delta\alpha\frac{\mathbf s^{\rm tr}}{q^{\rm tr}},
-\quad \alpha_{n+1}=\alpha_n+\Delta\alpha.
+\mathbf d^{(k)}_{n+1}\longrightarrow
+\varepsilon^{(k)}_{n+1}=B\mathbf d^{(k)}_{e,n+1}
+\longrightarrow
+(\sigma^{(k)}_{n+1},\varepsilon^{p,(k)}_{n+1},\alpha^{(k)}_{n+1}).
 \]
-分母的$3G$表示塑性流动使等效应力降低的速率，$H$表示屈服面扩大的速率。
-程序对返回映射求导得到一致切线，按$K_t=\sum_e\int B^{\mathsf T}C_tB\dd V$组装。
-每步用稀疏LU直接解法求Newton位移修正，配合回溯线搜索。
+最后一个箭头始终以固定的$\varepsilon^p_n,\alpha_n$为起点。
+其中候选塑性状态可以随$k$增大或减小，因为前几次候选尚未成为真实加载历史。
+只有整体平衡收敛后，才将最后的候选保存为第$n+1$步的已确认状态。
+
+例如$\alpha_n=0.001$，第一次试算得到$\Delta\alpha^{(0)}=0.0002$，
+候选为$0.0012$；修正位移后重新计算得到$\Delta\alpha^{(1)}=0.00015$，
+新候选应为$0.00115$，不能把上一次候选继续相加而得到$0.00135$。
+后者把寻找平衡的数值试算当成了额外加载历史，会改变应力及反力。
+若整个加载步失败，还须保留第$n$步状态，不能保存失败的候选。
+
+\subsection{径向返回与分母中的$3G$}
+剪切模量$G=E/[2(1+\nu)]=80.7692\,\mathrm{GPa}$，所以$3G=242.3077\,\mathrm{GPa}$。
+这里是数字3乘以剪切模量，不是一个新材料参数。
+先假设本步没有新增塑性，以总应变和上一加载步的塑性应变求弹性试算：
+\[
+\varepsilon^{e,\mathrm{tr}}=\varepsilon_{n+1}^{(k)}-\varepsilon^p_n,
+\qquad \mathbf s^{\mathrm{tr}}=2G\operatorname{dev}(\varepsilon^{e,\mathrm{tr}}),
+\qquad q^{\mathrm{tr}}=\sqrt{\tfrac32\mathbf s^{\mathrm{tr}}:\mathbf s^{\mathrm{tr}}}.
+\]
+若$q^{\mathrm{tr}}\le\sigma_{y0}+H\alpha_n$，保持塑性状态不变。
+否则，关联J2流动法则及后向欧拉积分给出
+\[
+\Delta\varepsilon^p=\Delta\alpha\,\tfrac32
+\frac{\mathbf s_{n+1}}{q_{n+1}}.
+\]
+各向同性弹性下，应力修正不改变偏应力方向，故
+$\mathbf s_{n+1}/q_{n+1}=\mathbf s^{\mathrm{tr}}/q^{\mathrm{tr}}$。
+塑性应变的迹为零，因此只修正偏应力：
+\[
+\mathbf s_{n+1}=\mathbf s^{\mathrm{tr}}-2G\Delta\varepsilon^p
+=\left(1-\frac{3G\Delta\alpha}{q^{\mathrm{tr}}}\right)\mathbf s^{\mathrm{tr}}.
+\]
+其中$3G$来自$2G\times(3/2)$。代回等效应力定义，得到
+\[
+q_{n+1}=q^{\mathrm{tr}}-3G\Delta\alpha.
+\]
+同时屈服面随硬化扩大：$\sigma_{y,n+1}=\sigma_{y0}+H(\alpha_n+\Delta\alpha)$。
+塑性修正后的应力必须满足$q_{n+1}=\sigma_{y,n+1}$，所以
+\[
+\boxed{\Delta\alpha=
+\frac{q^{\mathrm{tr}}-\sigma_{y0}-H\alpha_n}{3G+H}.}
+\]
+分子是试算超过屈服面的应力量；分母将偏应力降低和屈服面扩大两种作用相加。
+$\Delta\alpha$无量纲。这里的更新在每个高斯点独立完成。
+
+\subsection{一致切线与整体位移修正}
+将上述完整材料更新写成一个函数
+\[
+\boldsymbol\sigma_{n+1}=mathcal R(\boldsymbol\varepsilon_{n+1};
+\boldsymbol\varepsilon^p_n,\alpha_n).
+\]
+分号后的状态固定。所谓一致切线，就是对这一个离散更新函数求导：
+\[
+C_t^{(k)}=\left.\frac{\partial\mathcal R}{\partial\boldsymbol\varepsilon}\right|_{
+\varepsilon_{n+1}^{(k)};\,\varepsilon^p_n,\alpha_n},
+\qquad \delta\boldsymbol\sigma\approx C_t^{(k)}\delta\boldsymbol\varepsilon.
+\]
+它回答：保持上一步历史不变，本次总应变稍微改变，应力会改变多少？
+弹性区$C_t=D$；塑性区必须计入$\Delta\alpha$及返回方向随应变的变化，
+不能一直沿用弹性矩阵$D$。程序求的是公式的解析导数，并非训练网络；
+再用应变的中心差分检查该导数。
+
+由内力和应变关系，逐层线性化得到
+\[
+\mathbf f_{\rm int}=\sum_e\int B^{\mathsf T}\boldsymbol\sigma\dd V,
+\quad \delta\varepsilon=B\delta\mathbf d_e,
+\quad K_t=\sum_e\int B^{\mathsf T}C_tB\dd V.
+\]
+本题自由位置没有已知外力，残差为$\mathbf r_f=\mathbf f_{{\rm int},f}$。
+我们希望它变为零，于是Newton修正满足
+\[
+\mathbf r_f(\mathbf d^{(k)}+\delta\mathbf d)
+\approx\mathbf r_f^{(k)}+K_{t,ff}^{(k)}\delta\mathbf d_f=0,
+\qquad K_{t,ff}^{(k)}\delta\mathbf d_f=-\mathbf r_f^{(k)}.
+\]
+规定位置的修正为零；用稀疏直接解法解出自由位移修正，必要时通过线搜索缩小修正量。
+随后重新计算应变、应力与残差。材料点的屈服条件满足，并不代表全梁已经平衡。
+
 \noindent\begin{minipage}{\linewidth}
 \begin{lstlisting}
 for load_step in prescribed_displacements:
     impose_tip_displacement()
     for iteration in Newton:
         strain = B @ element_displacement
-        stress, trial_state, tangent = update(strain, committed_state)
-        internal_force, Kt = assemble(stress, tangent)
+        stress, candidate, Ct = update(strain, old_state)
+        internal_force, Kt = assemble(stress, Ct)
         if free_residual_is_small():
-            commit(trial_state)
+            old_state = candidate
             break
         correction = solve(Kt_ff, -internal_force_f)
         line_search(correction)
 \end{lstlisting}
 \end{minipage}
-材料状态只在整体平衡收敛后提交；Newton试算不能反复累积同一加载步的塑性。
+这里\code{old_state}在内层迭代期间固定，只有收敛分支才能替换。
+线搜索的每次试算同样从该固定状态计算。
 
 \subsection{工况与结果}
 保留原题端位移$0.1\,\mathrm m$，另外扩展至$0.5\,\mathrm m$，共50步，每步$0.01\,\mathrm m$。

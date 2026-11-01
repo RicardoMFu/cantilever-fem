@@ -26,6 +26,7 @@ def update(strain, plastic, alpha, E=210e9, nu=.3, yield_stress=250e6, H=1e9):
     directions = np.zeros((3, 3, 3))
     directions[0, 0, 0] = directions[1, 1, 1] = 1
     directions[2, 0, 1] = directions[2, 1, 0] = .5
+    # 对本次返回映射求导，上一加载步状态保持固定。
     columns = []
     for de in directions:
         dq = 3 * G * np.sum(s * de, axis=(-2, -1)) / safe_q

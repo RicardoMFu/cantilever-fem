@@ -72,7 +72,7 @@ def solve(nx=8, ny=2, maximum=.5, steps=50, yield_stress=250e6, H=1e9):
         return internal, K, stress, pnew, anew
 
     for step, load in enumerate(np.linspace(0, maximum, steps+1)[1:], 1):
-        # 初始预测为上一步自由位移；更新本步的规定边界位移。
+        # 自由位移沿用上一步，右端设为本步规定值。
         d[right] = -load
         for iteration in range(35):
             internal, K, stress, pnew, anew = assemble(d)
@@ -81,7 +81,7 @@ def solve(nx=8, ny=2, maximum=.5, steps=50, yield_stress=250e6, H=1e9):
             if residual < 1e-8:
                 break
             correction = spsolve(K[free][:, free], -internal[free])
-            # 回溯线搜索，每次试算仍使用上一步已提交的材料状态。
+            # 线搜索仍从上一收敛步的材料状态试算。
             norm = np.linalg.norm(internal[free])
             factor = 1.
             for _ in range(12):
@@ -95,7 +95,7 @@ def solve(nx=8, ny=2, maximum=.5, steps=50, yield_stress=250e6, H=1e9):
                 raise RuntimeError(f'{nx}x{ny} step {step}: 线搜索失败')
         else:
             raise RuntimeError(f'{nx}x{ny} step {step}: Newton未收敛')
-        # 只有全局平衡收敛，才提交材料状态，防止同一步重复积累塑性。
+        # 整体收敛后保存状态。
         plastic, alpha = pnew, anew
         force = -internal[right].sum()
         history.append([load, force, alpha.max(), iteration, residual])

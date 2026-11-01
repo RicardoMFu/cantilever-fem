@@ -22,11 +22,10 @@ def main():
         for load,snap in snaps.items():
             np.savez(out/f'state_{nx}x{ny}_{load}.npz',nodes=nodes,elements=elements,**snap)
         ax.plot(hist[:,0],hist[:,1]/1000,label=f'{nx} × {ny}')
-        # 该网格的线弹性参考斜率由最初弹性加载步得到。
+        # 初始弹性步给出参考刚度。
         ax.plot(hist[:,0],hist[:,0]*hist[1,1]/hist[1,0]/1000,'--',alpha=.4)
         original=hist[np.isclose(hist[:,0],.1)][0]
-        # 有历史变量时，不在边界点临时创建新的材料状态。
-        # 将四个高斯点应力双线性外推至公共顶点，再取相邻两单元均值。
+        # 高斯点应力外推至公共顶点，再取两侧均值。
         g=1/np.sqrt(3)
         basis=np.array([[1,x,y,x*y] for x in [-g,g] for y in [-g,g]])
         sides=[]

@@ -15,15 +15,15 @@ def strain_matrix(xy, xi, eta):
         [1 + eta, 1 + xi],
         [-(1 + eta), 1 - xi],
     ])
-    jac = xy.T @ dn                      # J=[[x,xi, x,eta],[y,xi, y,eta]]
+    jac = xy.T @ dn                      # 坐标映射的雅可比矩阵
     det_j = np.linalg.det(jac)
     if det_j <= 0:
         raise ValueError("节点应逆时针排列，且单元不能翻转或退化")
     grad = np.linalg.solve(jac.T, dn.T).T  # 每行得到 [N,x, N,y]
     B = np.zeros((3, 8))
-    B[0, 0::2] = grad[:, 0]              # epsilon_xx = sum(N,x * u)
-    B[1, 1::2] = grad[:, 1]              # epsilon_yy = sum(N,y * v)
-    B[2, 0::2] = grad[:, 1]              # gamma_xy = sum(N,y*u + N,x*v)
+    B[0, 0::2] = grad[:, 0]              # 水平正应变
+    B[1, 1::2] = grad[:, 1]              # 竖向正应变
+    B[2, 0::2] = grad[:, 1]              # 工程剪应变
     B[2, 1::2] = grad[:, 0]              # 工程剪应变，不额外乘 1/2
     return B, det_j
 
@@ -66,7 +66,7 @@ def solve_beam(nx=8, ny=2, thickness=1.0):
         [0, 0, (1 - 2 * nu) / 2],
     ])  # 平面应变本构；应变顺序 [epsilon_xx, epsilon_yy, gamma_xy]
 
-    # ① 生成节点：先底行从左向右，再中间行、顶行。
+    # 生成节点：先底行从左向右，再中间行、顶行。
     nodes = np.array([(x, y) for y in np.linspace(0, h, ny + 1)
                       for x in np.linspace(0, L, nx + 1)])
     elements = []
@@ -76,7 +76,7 @@ def solve_beam(nx=8, ny=2, thickness=1.0):
             elements.append([n, n + 1, n + nx + 2, n + nx + 1])
     elements = np.array(elements)         # 局部顺序：左下、右下、右上、左上
 
-    # ② 计算单元刚度并组装：Python编号从0开始，课堂编号从1开始。
+    # 计算单元刚度并组装：Python编号从0开始，课堂编号从1开始。
     ndof = 2 * len(nodes)
     K = np.zeros((ndof, ndof))
     for enodes in elements:
@@ -84,7 +84,7 @@ def solve_beam(nx=8, ny=2, thickness=1.0):
         dofs = np.column_stack((2 * enodes, 2 * enodes + 1)).ravel()
         K[np.ix_(dofs, dofs)] += ke       # 共享自由度的贡献在原位置相加
 
-    # ③ 已知位移：左边u=v=0；右边仅v=-0.1，u保持自由。
+    # 已知位移：左边u=v=0；右边仅v=-0.1，u保持自由。
     left = np.flatnonzero(np.isclose(nodes[:, 0], 0))
     right = np.flatnonzero(np.isclose(nodes[:, 0], L))
     fixed = np.sort(np.r_[2 * left, 2 * left + 1, 2 * right + 1])
@@ -92,12 +92,12 @@ def solve_beam(nx=8, ny=2, thickness=1.0):
     d = np.zeros(ndof)
     d[2 * right + 1] = -0.1
 
-    # ④ 提取自由位移系统（8×2网格为45阶）；不显式求矩阵逆。
+    # 提取自由位移系统（8×2网格为45阶）；不显式求矩阵逆。
     Kff = K[np.ix_(free, free)]
     rhs = -K[np.ix_(free, fixed)] @ d[fixed]
     d[free] = np.linalg.solve(Kff, rhs)   # LAPACK一般线性系统直接解法（LU）
 
-    # ⑤ 回代原始方程：自由位置应接近0，约束位置得到反力。
+    # 回代原始方程：自由位置应接近0，约束位置得到反力。
     reaction = K @ d                    # 本题已知外力向量为0
     force_scale = max(np.max(np.abs(reaction[fixed])), 1.0)
     rotation = np.column_stack((-nodes[:, 1], nodes[:, 0])).ravel()
