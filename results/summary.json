@@ -1,0 +1,47 @@
+[
+  {
+    "mesh": "8x2",
+    "force_01_kN": 2347.2945857565737,
+    "alpha_01": 0.0,
+    "force_05_kN": 8407.268251459509,
+    "alpha_05": 0.0014593893750950826,
+    "max_iterations": 4,
+    "max_residual": 7.542295232627667e-09,
+    "point_stress_sides_MPa": [
+      196.63846879140536,
+      149.1127565002354
+    ],
+    "point_stress_mean_MPa": 172.87561264582038,
+    "first_plastic_displacement_m": 0.29
+  },
+  {
+    "mesh": "16x4",
+    "force_01_kN": 1131.1670507372496,
+    "alpha_01": 0.0,
+    "force_05_kN": 5103.919699274503,
+    "alpha_05": 0.0008410769967659731,
+    "max_iterations": 4,
+    "max_residual": 9.595687760548339e-09,
+    "point_stress_sides_MPa": [
+      222.24342533271818,
+      192.19944525328086
+    ],
+    "point_stress_mean_MPa": 207.2214352929995,
+    "first_plastic_displacement_m": 0.35000000000000003
+  },
+  {
+    "mesh": "32x8",
+    "force_01_kN": 824.7315908646821,
+    "alpha_01": 0.0,
+    "force_05_kN": 3801.4813865597625,
+    "alpha_05": 0.00092306714869805,
+    "max_iterations": 5,
+    "max_residual": 8.775914561285396e-09,
+    "point_stress_sides_MPa": [
+      213.32053361649514,
+      198.00521382053628
+    ],
+    "point_stress_mean_MPa": 205.6628737185157,
+    "first_plastic_displacement_m": 0.35000000000000003
+  }
+]

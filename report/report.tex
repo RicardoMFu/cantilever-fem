@@ -1,0 +1,525 @@
+% 独立编译：latexmk -cd -xelatex -interaction=nonstopmode -file-line-error 第一部分_网格与位移求解.tex
+% 依赖同目录assets/；无参考文献数据库；数值表由../prepare_stage1.py生成。
+\documentclass[UTF8,a4paper,fontset=fandol,10pt]{ctexart}
+\usepackage{amsmath,amssymb,bm,upgreek}
+\newcommand{\dd}{\mathop{}\!\mathrm{d}}
+\newcommand{\ee}{\mathrm{e}}
+\newcommand{\ii}{\mathrm{i}}
+\usepackage{booktabs,array,longtable,graphicx,caption,subcaption,float,tikz}
+\usepackage{xcolor,listings,siunitx}
+\definecolor{ink}{HTML}{183247}
+\definecolor{accent}{HTML}{B55537}
+\usepackage[colorlinks=true,allcolors=ink]{hyperref}
+\usepackage{cleveref}
+\crefname{figure}{图}{图}\crefname{table}{表}{表}\crefname{equation}{式}{式}
+\crefformat{section}{第#2#1#3节}
+\usepackage{geometry,fancyhdr}
+\geometry{left=24mm,right=24mm,top=23mm,bottom=23mm}
+\pagestyle{fancy}\fancyhf{}
+\fancyhead[L]{\small 二维悬臂梁有限元计算}
+\fancyhead[R]{\small 计算与结果分析}
+\fancyfoot[C]{\small\thepage}
+\setlength{\headheight}{14pt}
+\setlength{\parskip}{4pt}
+\setlength{\emergencystretch}{2em}
+\ctexset{section={format=\large\bfseries\color{ink}},subsection={format=\normalsize\bfseries\color{ink}}}
+\captionsetup{font=small,labelfont=bf}
+\graphicspath{{assets/}}
+\newcommand{\code}[1]{\texttt{\detokenize{#1}}}
+\lstset{language=Python,basicstyle=\ttfamily\small,breaklines=true,
+ backgroundcolor=\color{ink!4},frame=single,rulecolor=\color{ink!20},showstringspaces=false}
+\title{\vspace{-1.2em}\color{ink}\LARGE 二维悬臂梁：从单元刚度到节点位移\\[.4em]
+\large 三套网格：线弹性与J2弹塑性分析}
+\author{}\date{2026年11月1日}
+\begin{document}
+\maketitle\vspace{-2em}
+
+\section{模型与参数}
+计算域为$0\leq x\leq20\,\mathrm m$、$0\leq y\leq1\,\mathrm m$。
+材料取$E=210\,\mathrm{GPa}$、$\nu=0.30$，采用\textbf{小应变、线弹性、平面应变}模型。
+左端全部节点满足$u=v=0$；右端全部节点满足$v=-0.1\,\mathrm m$，水平位移$u$保持自由。
+上下表面无外加面力，忽略体力。以$u,v$分别表示水平和竖向位移。
+
+\begin{figure}[H]\centering
+\begin{tikzpicture}[x=0.5cm,y=1cm,>=stealth]
+\fill[ink!6] (0,0) rectangle (20,1);
+\draw[ink] (0,0) rectangle (20,1);
+\draw[ink,line width=1.4pt] (0,-.2)--(0,1.2);
+\foreach \q in {-.1,.15,.4,.65,.9,1.15}{\draw[ink](-.4,\q-.15)--(0,\q);}
+\draw[ink,dashed] (0,.5)--(20,.5);
+\draw[accent,->,thick] (20,1.5)--(20,-.65);
+\node[anchor=west] at (20.3,.5) {$v=-0.1\,\mathrm m$};
+\node[anchor=west] at (20.3,0) {$u$自由};
+\draw[<->] (0,-.65)--(20,-.65) node[midway,below] {$L=20\,\mathrm m$};
+\draw[<->] (-1.4,0)--(-1.4,1) node[midway,left] {$h=1\,\mathrm m$};
+\node[anchor=south] at (10,1.25) {线弹性、平面应变；$E=210\,\mathrm{GPa}$，$\nu=0.30$};
+\node[anchor=north] at (3,-1.15) {左端：$u=v=0$};
+\node[anchor=north] at (14,-1.15) {上下表面：无外加面力};
+\end{tikzpicture}
+\caption{几何、材料与边界条件示意。箭头表示规定的位移方向，图形比例作显示调整。}
+\end{figure}
+
+
+原题只给厚度符号$b$，未指定数值，本计算明确取$b=1\,\mathrm m$。
+对本题均匀厚度、纯位移加载的设置，$K$与反力均随$b$成正比，位移解不随$b$改变。
+厚度约定需要保留在后续反力和能量结果中。
+
+本文完成三套网格的位移求解、挠度比较、应力恢复和指定点应力分析。线弹性使用NumPy直接求解；弹塑性使用SciPy稀疏直接求解与Newton迭代。未使用有限元软件或高层有限元库。
+
+\begin{table}[H]\centering
+\caption{三套网格与方程规模}\label{tab:counts}
+\input{assets/mesh_counts.tex}
+\end{table}
+
+\subsection{节点与自由度编号}
+令长度方向有$n_x$个单元，高度方向有$n_y$个单元。
+节点先沿底边从左到右编号，再逐行向上；单元采用同样顺序。
+用从零开始的行列指标$i,j$表示节点位置，则
+\begin{equation}
+ n(i,j)=j(n_x+1)+i+1,\qquad
+ x_i=\frac{20i}{n_x},\quad y_j=\frac{j}{n_y}.
+\end{equation}
+节点$n$的全局位移编号是$g_u=2n-1$、$g_v=2n$。
+局部节点统一按\textbf{左下、右下、右上、左上}逆时针排列。
+对单元左下角指标$(i,j)$，单元号$e=jn_x+i+1$，有
+\begin{equation}
+ \mathrm{IEN}(:,e)=
+ \begin{pmatrix}n(i,j)\\n(i,j)+1\\n(i,j)+n_x+2\\n(i,j)+n_x+1\end{pmatrix}.
+\end{equation}
+\textbf{IEN记录节点连接；ID记录自由方程编号。}本文ID对自由位移按全局顺序编为$1,2,\ldots,n_f$，
+对已知位移标记为0。\textbf{ID为0表示位移已知，不代表该位移数值为0}；右端$v=-0.1\,\mathrm m$也标记为0。
+完整ID与IEN数值见附录。
+
+ID完整数组有$2\times n_n$项，IEN完整数组有$4\times n_e$项，
+其中$n_n$和$n_e$分别是节点数与单元数。
+IEN按单元号读取四个全局节点；ID按节点号及位移方向读取自由方程编号。附录逐条列出对应关系。
+
+
+\section{单元矩阵}
+四节点单元使用双线性形函数：
+\begin{equation}
+\begin{aligned}
+N_1&=\tfrac14(1-\xi)(1-\eta),&N_2&=\tfrac14(1+\xi)(1-\eta),\\
+N_3&=\tfrac14(1+\xi)(1+\eta),&N_4&=\tfrac14(1-\xi)(1+\eta).
+\end{aligned}
+\end{equation}
+同一组形函数用于插值坐标和位移：$x=\sum_aN_ax_a$、$y=\sum_aN_ay_a$，
+$u=\sum_aN_au_a$、$v=\sum_aN_av_a$。
+标准坐标只用于方便积分，并没有增加物理位移未知量。
+
+\subsection{应变矩阵}
+采用下列雅可比矩阵约定：
+\begin{equation}
+J=\begin{pmatrix}x_{,\xi}&x_{,\eta}\\y_{,\xi}&y_{,\eta}\end{pmatrix},
+\qquad
+\begin{pmatrix}N_{a,x}\\N_{a,y}\end{pmatrix}
+=J^{-\mathsf T}\begin{pmatrix}N_{a,\xi}\\N_{a,\eta}\end{pmatrix}.
+\end{equation}
+以工程剪应变$\gamma_{xy}=u_{,y}+v_{,x}$为第三分量，得到
+\begin{equation}
+\boldsymbol\varepsilon=\begin{pmatrix}\varepsilon_{xx}\\\varepsilon_{yy}\\\gamma_{xy}\end{pmatrix}
+=B\mathbf d_e,\quad B=[B_1\ B_2\ B_3\ B_4],\quad
+B_a=\begin{pmatrix}N_{a,x}&0\\0&N_{a,y}\\N_{a,y}&N_{a,x}\end{pmatrix}.
+\end{equation}
+这里$B$为$3\times8$，$\mathbf d_e=(u_1,v_1,u_2,v_2,u_3,v_3,u_4,v_4)^{\mathsf T}$。
+平面应变本构矩阵为
+\begin{equation}
+D=\frac{E}{(1+\nu)(1-2\nu)}
+\begin{pmatrix}1-\nu&\nu&0\\\nu&1-\nu&0\\0&0&(1-2\nu)/2\end{pmatrix}
+=\begin{pmatrix}282.692308&121.153846&0\\121.153846&282.692308&0\\0&0&80.769231\end{pmatrix}\mathrm{GPa}.
+\end{equation}
+
+\subsection{单元刚度}
+由虚功离散得到单元刚度，采用$2\times2$高斯完全积分：
+\begin{equation}\label{eq:ke}
+ K^{(e)}=b\int_{-1}^{1}\int_{-1}^{1}B^{\mathsf T}DB\det J\,\dd\xi\,\dd\eta
+ \approx b\sum_{q=1}^{4}B_q^{\mathsf T}DB_q\det J_q.
+\end{equation}
+积分点为$(\pm1/\sqrt3,\pm1/\sqrt3)$的四种组合，两方向权重均为1。
+每个点产生一个$8\times8$矩阵，四个矩阵逐项相加。
+
+对$8\times2$网格第1单元，$\Delta x=2.5\,\mathrm m$、$\Delta y=0.5\,\mathrm m$，
+$J=\operatorname{diag}(1.25,0.25)\,\mathrm m$，$\det J=0.3125\,\mathrm{m^2}$。
+课堂中展开的第一个对角项和交叉项是
+\begin{align}
+(B^{\mathsf T}DB)_{11}&=D_{11}N_{1,x}^2+D_{33}N_{1,y}^2,\\
+(B^{\mathsf T}DB)_{12}&=(D_{12}+D_{33})N_{1,x}N_{1,y}.
+\end{align}
+完成四点求和后，左上角小块为
+\begin{equation}
+K^{(1)}_{1:2,1:2}=b
+\begin{pmatrix}153.461538&50.480769\\50.480769&476.538462\end{pmatrix}\mathrm{GPa}.
+\end{equation}
+乘入以米计的$b$后，刚度单位是$\mathrm{N/m}$。
+
+\section{整体方程与位移}
+\subsection{刚度组装}
+单元内力满足$\mathbf f_e=K^{(e)}\mathbf d_e$。同一个全局节点可能连接多个单元，
+它的总内力等于各相邻单元内力之和，因此对应刚度也必须相加：
+\begin{equation}
+ K_{g_i^{(e)},g_j^{(e)}}\mathrel{+}=K^{(e)}_{ij}.
+\end{equation}
+对粗网格，前两个单元的局部到全局自由度映射分别是
+\[
+\mathbf g^{(1)}=(1,2,3,4,21,22,19,20),\quad
+\mathbf g^{(2)}=(3,4,5,6,23,24,21,22).
+\]
+例如全局节点2的水平自由度是3，它同时得到两个单元的贡献：
+\[
+ K_{33}=K^{(1)}_{33}+K^{(2)}_{11}
+       =b\times306.923077\,\mathrm{GPa}.
+\]
+积分是在单元内部累加空间贡献；组装是在全局自由度位置累加相邻单元贡献。
+
+\subsection{边界条件与求解}
+用下标$f$表示位移待求的自由度，用$c$表示位移已知的自由度。本题无已知外加力，
+自由位置的平衡条件为
+\begin{equation}
+ K_{ff}\mathbf d_f+K_{fc}\mathbf d_c=\mathbf0
+ \quad\Longrightarrow\quad
+ \boxed{K_{ff}\mathbf d_f=-K_{fc}\mathbf d_c.}
+\end{equation}
+粗网格的已知全局自由度和对应位移是
+\[
+c=(1,2,18,19,20,36,37,38,54),\quad
+\mathbf d_c=(0,0,-0.1,0,0,-0.1,0,0,-0.1)^{\mathsf T}\,\mathrm m.
+\]
+所以$K_{ff}$为$45\times45$。右端水平自由度17、35、53保持未知，不能额外固定。
+网格加密时只需按节点坐标寻找左右边界，不必手工修改这些编号。
+
+\begin{lstlisting}
+K[np.ix_(dofs, dofs)] += ke
+Kff = K[np.ix_(free, free)]
+rhs = -K[np.ix_(free, fixed)] @ d[fixed]
+d[free] = np.linalg.solve(Kff, rhs)
+reaction = K @ d
+\end{lstlisting}
+\code{np.ix_}提取行、列编号的全部组合；\code{free}与\code{fixed}分别存储两组全局下标。
+\code{solve}调用LAPACK的一般线性系统直接解法，通过选主元LU分解及前后代入求解，
+不显式计算矩阵逆。$\mathbf r=K\mathbf d$在自由位置应接近0，在已知位移位置给出支座或加载装置的反力。
+
+\begin{table}[H]\centering
+\caption{三套网格的实际求解结果，$b=1\,\mathrm m$}\label{tab:solutions}
+\input{assets/solution_summary.tex}
+\end{table}
+表中$v(10,0.5)$是一个点的位移，反力是右端所有受约束竖向自由度的力之和。
+三套网格端部位移均为$-0.1\,\mathrm m$，但反力不同，对应等效端部刚度
+$|R_y|/0.1$分别为$23.473$、$11.312$、$8.247\,\mathrm{MN/m}$。
+这反映粗网格弯曲偏硬，而不是求解器没有解平衡。
+自由位置相对残差按$\max_{i\in f}|(K\mathbf d)_i|/\max_{i\in c}|(K\mathbf d)_i|$计算，
+只衡量离散方程的平衡程度，不能衡量与真实连续体解的误差。
+刚度对称性按$e_K=\|K-K^{\mathsf T}\|_F/\|K\|_F$计算。
+其中$\|A\|_F=\sqrt{\sum_i\sum_j A_{ij}^2}$，即全部矩阵项平方和的平方根。$e_K$比较同一网格的$K_{ij}$与$K_{ji}$，不比较不同网格的刚度。三套网格的$e_K$依次为$3.15\times10^{-17}$、$4.52\times10^{-17}$、$4.28\times10^{-17}$。
+粗网格总矩阵的部分项（单位$\mathrm{GN/m}$）为
+\[
+K_{1:2,1:2}=\begin{pmatrix}153.461538&50.480769\\50.480769&476.538462\end{pmatrix},
+\quad K_{12}=K_{21}=50.480769\,\mathrm{GN/m}.
+\]
+
+
+\section{网格编号图}
+三图采用统一编号规则。左端深色线表示固定端，右端棕色线表示规定竖向位移的边界。
+
+\begin{figure}[H]\centering
+\includegraphics[width=\linewidth]{mesh_8x2.pdf}
+\caption{$8\times2$网格，16个单元、27个节点。}
+\end{figure}
+\begin{figure}[H]\centering
+\includegraphics[width=\linewidth]{mesh_16x4.pdf}
+\caption{$16\times4$网格，64个单元、85个节点。}
+\end{figure}
+\begin{figure}[H]\centering
+\includegraphics[width=\linewidth]{mesh_32x8.pdf}
+\caption{$32\times8$网格，256个单元、297个节点。}
+\end{figure}
+\clearpage
+\section{指定位置的位移}
+节点位移求解后，任意单元内的位置不再引入新的未知量，而由形函数插值得到：
+\begin{equation}
+ u(x,y)=\sum_{a=1}^4N_a(x,y)u_a,\qquad
+ v(x,y)=\sum_{a=1}^4N_a(x,y)v_a.
+\end{equation}
+对本题轴对齐矩形，先定位包含该点的单元，再计算
+\[
+\xi=2(x-x_L)/\Delta x-1,\qquad
+\eta=2(y-y_B)/\Delta y-1.
+\]
+例如粗网格的$(10,1)$为第12单元右上角，$\xi=\eta=1$，四个形函数值为$(0,0,1,0)$。
+第12单元连接节点$(13,14,23,22)$，因此该点位移直接等于节点23位移。
+中性轴是整条$y=h/2=0.5\,\mathrm m$直线；中性轴挠度图在这条线上逐点插值。
+
+\subsection{公共边的连续性}
+Q4单元位移在公共边上连续，原因是相邻单元使用相同的两个端点位移。
+例如公共竖边端点为A、B，以$t\in[0,1]$表示边上的位置，两侧都退化为
+\[
+u_{\rm edge}(t)=(1-t)u_A+tu_B,\qquad
+v_{\rm edge}(t)=(1-t)v_A+tv_B.
+\]
+公共边上的位移一致；单元内部使用不同的其余节点，法向位移导数可以不同，沿边切向导数一致。
+
+有限元弱形式包含位移的一阶导数积分，并不要求离散位移的一阶导数跨单元连续。
+应变由导数构成，应力再由本构得到，因此原始单元应变和应力可以跳变。
+\section{欧拉梁参考解}
+令$w(x)$为中性轴竖向位移，向上为正；$z=y-h/2$为到中性轴的有符号距离。
+采用小变形、平截面保持平面且垂直中性轴的欧拉梁假设。
+截面转角$\theta\approx w'$，逆时针为正。截面中相对位置$(0,z)$转动后水平分量为
+$-z\sin\theta\approx-z\theta$，因而在无轴向伸长的弯曲参考模型中
+\begin{equation}
+u=-zw',\qquad\varepsilon_{xx}=-zw'',\qquad\sigma_{xx}=-Ezw''.
+\end{equation}
+负号的几何含义是：正转角使上方点向左；本题$w'<0$，因此上方点向右。
+相邻截面转角的变化引起伸长或缩短，单纯相同转角的刚体转动不会产生该轴向应变。
+
+以向下端力大小$P>0$为参考加载。截开位置$x$，右端力臂为$L-x$。
+定义截面应力矩$\mathcal M=\int_Az\sigma_{xx}\dd A$，由截面平衡及本构有
+\begin{equation}
+\mathcal M=P(L-x)=-EIw'',\qquad I=\int_Az^2\dd A=bh^3/12.
+\end{equation}
+用固定端$w(0)=w'(0)=0$积分两次：
+\begin{align}
+EIw'&=-P(Lx-x^2/2),\\
+w(x)&=-\frac{Px^2(3L-x)}{6EI}.
+\end{align}
+原题为端部位移加载，取$\delta=0.1\,\mathrm m$，由$w(L)=-\delta$确定共同的解析端力：
+\begin{equation}
+P_{\rm EB}=\frac{3EI\delta}{L^3}=656.25\,\mathrm{kN}\quad(b=1\,\mathrm m),
+\qquad
+\boxed{w(x)=-\delta\frac{x^2(3L-x)}{2L^3}}.
+\end{equation}
+该端力是满足相同端挠度的解析参考，不是各套有限元网格各自的反力。
+计算理论应力时也使用这个共同端力：
+\begin{equation}
+\sigma_{xx}^{\rm EB}(x,y)=\frac{P_{\rm EB}(L-x)}{I}(y-h/2),
+\quad w(10)=-0.03125\,\mathrm m,
+\quad \sigma_{xx}^{\rm EB}(10,1)=39.375\,\mathrm{MPa}.
+\end{equation}
+
+\section{挠度比较}
+\begin{figure}[H]\centering
+\includegraphics[width=.95\linewidth]{deflection.pdf}
+\caption{中性轴挠度：三套Q4网格与欧拉梁解。上图为挠度，下图为有限元与欧拉梁的位移差；向下位移为负。}
+\label{fig:deflection}
+\end{figure}
+中性轴位移采用单元形函数在641个横坐标处插值。
+三套网格在$(10,0.5)$处的竖向位移依次为
+\[
+(-0.03118569,\;-0.03115850,\;-0.03119089)\,\mathrm m.
+\]
+与欧拉梁的差异均小于$0.1\,\mathrm{mm}$，但此点差异并非随网格单调变化。
+
+
+\section{应变与应力计算}
+指定位置的原始单元应变和应力由
+\begin{equation}
+\boldsymbol\varepsilon=B\mathbf d_e,\qquad
+\boldsymbol\sigma=D\boldsymbol\varepsilon,\qquad
+\sigma_{xx}=D_{11}\varepsilon_{xx}+D_{12}\varepsilon_{yy}
+\end{equation}
+得到。这里采用二维平面应变矩阵，不能用一维的$E\varepsilon_{xx}$替代。
+粗网格第12单元在$(10,1)$的导数为
+\[
+(N_{a,x})=(0,0,0.4,-0.4)\,\mathrm{m^{-1}},\qquad
+(N_{a,y})=(0,-2,2,0)\,\mathrm{m^{-1}}.
+\]
+因此$\varepsilon_{xx}=0.4(u_{23}-u_{22})=2.11776684\times10^{-4}$，
+$\varepsilon_{yy}=2(v_{23}-v_{14})=-3.99839659\times10^{-5}$，
+代入本构得到$\sigma_{xx}=55.0234\,\mathrm{MPa}$。
+
+\subsection{整梁云图}
+云图将每个位置的轴向应力映射为颜色：横纵坐标是梁内位置，色标单位为MPa；红色为正的拉应力，蓝色为负的压应力。
+每个显示位置先定位单元，计算该点的$B$，取出该单元八个位移，再计算$DB\mathbf d_e$的第一分量。
+靠近零应力的区域颜色较浅；颜色表示应力大小，不表示位移大小。
+
+\begin{figure}[H]\centering
+\includegraphics[width=\linewidth]{stress_contour.pdf}
+\caption{最细$32\times8$网格的轴向应力。每个单元划分为$4\times4$个显示子区，
+以子区中心的$DB\mathbf d_e$填色，不跨单元平均。纵向比例作显示放大，黑点为$(10,1)$。}
+\label{fig:stress}
+\end{figure}
+拉应力为正、压应力为负。固定端附近存在边界约束效应，云图并不预设全域严格服从线性截面分布。
+显示子区只用于提高云图的采样密度，并没有增加计算单元或位移自由度。
+
+\subsection{指定点应力}
+$(10,1)$同时属于左右两个单元。分别在两侧单元中直接代入该点的标准坐标，
+保留两侧应力值，并以\textbf{等权算术平均}作为本次节点应力恢复约定。
+\begin{table}[H]\centering
+\caption{$(10,1)$处轴向应力；相对差异为$|\bar\sigma_{xx}-39.375|/39.375$。}
+\input{assets/stress_table.tex}
+\end{table}
+\begin{figure}[H]\centering
+\includegraphics[width=\linewidth]{point_stress.pdf}
+\caption{指定点的两侧及平均应力，与欧拉梁参考值的比较。横轴从左向右表示网格加密。}
+\label{fig:point}
+\end{figure}
+两侧应力差从约$13.337$降至$6.658$、$3.323\,\mathrm{MPa}$。
+平均应力逐渐靠近欧拉梁，但仅凭三套网格，不能确认二维连续体极限等于标准欧拉梁结果，
+也不能把相对于梁理论的全部差异都归因于离散误差。
+
+\section{误差分析}
+\subsection{位移导数与弯曲离散}
+位移的小差异在求导后可能成为较大的应变差异。边界位移插值连续，不代表单元斜率准确。
+为说明多余剪切的来源，取一个宽度为$a$、中心横坐标为$x_c$的矩形单元。
+常曲率弯曲的位移为$u=-\kappa xz$、$v=\kappa x^2/2$，其两个导数恰好抵消：
+\[
+u_{,y}=-\kappa x,\qquad v_{,x}=\kappa x,\qquad\gamma_{xy}=0.
+\]
+矩形Q4可以精确插值$xz$，但将二次函数$v$插值为单元内的一次函数，得到$v_{h,x}=\kappa x_c$。
+因此离散剪应变为
+\[
+\gamma_{h,xy}=\kappa(x_c-x).
+\]
+它只在单元中心为零，其余位置产生本不该有的剪切能。
+对本例积分得$U_{\rm extra}=bG\kappa^2 h_e a^3/24>0$，其中$h_e$为该单元高度。
+附加能量使单元弯曲偏硬；网格加密减小$a$，可减轻这种影响。
+
+\begin{table}[H]\centering
+\caption{位移加载下的弯曲诊断。剪切能为$\frac12\int G\gamma_{xy}^2\dd V$，
+挠度差为641个采样点相对于欧拉梁的最大绝对差。}
+\input{assets/diagnostics.tex}
+\end{table}
+反力随网格加密明显下降，剪切能占比也下降，支持粗网格偏硬的判断。
+剪切能同时包含实际剪切与离散引入的额外剪切。
+
+\subsection{模型约束与梁理论}
+二维问题规定$\varepsilon_{zz}=0$，而标准欧拉梁使用一维轴向弹性关系。
+远离端部，若局部近似$\sigma_{yy}=0$，由平面应变本构可得
+\[
+\varepsilon_{yy}=-\frac{\nu}{1-\nu}\varepsilon_{xx},\qquad
+\sigma_{xx}=\frac{E}{1-\nu^2}\varepsilon_{xx}.
+\]
+因此，同一弯曲应变在该近似下对应更大的轴向应力。
+把这一约束效应作为辅助量级估计，可得到
+$39.375/(1-0.3^2)=43.2692\,\mathrm{MPa}$，比原梁参考高约$9.89\%$。
+
+
+二维模型限制厚度方向变形，通常比一维梁更硬。两者又使用相同的端部位移，因此挠度曲线可以接近，但维持该位移所需的力和产生的应力仍有差别。固定端局部约束与网格误差也会影响结果。
+
+\section{计算结论与复现}
+三套网格均完成平面应变Q4位移求解和应力恢复。
+最细网格在$(10,1)$的两侧平均轴向应力为$44.6186\,\mathrm{MPa}$，
+相对标准欧拉梁高$13.32\%$；中性轴挠度曲线与梁理论接近。
+网格加密减小了指定点的两侧应力跳跃，也降低了端部反力。
+网格加密后应力跳跃减小；进一步加密可用于判断剩余差异中离散误差所占的比重。
+
+\clearpage
+\section{非线性扩展：J2弹塑性}
+\subsection{插值与反力}
+矩形Q4的四个形函数均由$(1\pm\xi)(1\pm\eta)/4$展开得到，包含$1,\xi,\eta,\xi\eta$。
+由于矩形的$x$与$\xi$、截面高度$z=y-h/2$与$\eta$均为线性关系，
+位移插值可写成$u_h=a_0+a_1x+a_2z+a_3xz$，$v_h$具有相同的基函数但系数不同。
+这些系数由四个节点值确定，并非额外未知量。常曲率弯曲中$w''=\kappa$，
+若取$w(0)=w'(0)=0$，积分得到$v=w=\kappa x^2/2$；截面转动则给出$u=-zw'=-\kappa xz$。
+这里$z$仅表示截面内高度；下面的下标$zz$改指厚度方向。
+
+反力由完整位移回代得到：$\mathbf r=K\mathbf d$（线弹性），
+或由收敛应力积分得到$\mathbf r=\sum_e\int B^{\mathsf T}\boldsymbol\sigma\dd V$（无已知体力、面力时）。
+右端合反力是所有右端竖向自由度之和。粗网格为节点9、18、27，
+即$R_y=r_{18}+r_{36}+r_{54}$；中网格节点为17、34、51、68、85；
+细网格节点为33、66、99、132、165、198、231、264、297。
+
+\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}
+right_nodes = where(x == L)
+vertical_dofs = 2 * right_nodes + 1
+R_y = internal_force[vertical_dofs].sum()
+\end{lstlisting}
+\end{minipage}
+上式伪代码使用从零开始的数组下标，报告节点编号从1开始。
+
+\subsection{参数与三维材料状态}
+沿用$E=210\,\mathrm{GPa}$、$\nu=0.30$；新增教学假设为
+初始屈服应力$\sigma_{y0}=250\,\mathrm{MPa}$、硬化模量$H=1\,\mathrm{GPa}$。
+这些参数未经材料试验标定。$H$定义为屈服应力对等效塑性应变的斜率，不是应力对总应变的斜率。
+屈服面选用J2、流动法则选用关联流动、硬化选用线性各向同性硬化，均属于本构假设。
+
+二维平面应变仍只求节点$u,v$，但材料点具有
+$\varepsilon_{zz}=\varepsilon^e_{zz}+\varepsilon^p_{zz}=0$；两项可以分别非零。
+因此必须保留$\sigma_{zz}$和$\varepsilon^p_{zz}$。
+平面内的工程剪应变转换成三维张量时，$\varepsilon_{xy}=\gamma_{xy}/2$。
+在本题对称假设下$xz,yz$剪切保持为零，程序用三维张量统一实现。
+
+单轴拉伸试验中等效应力应等于轴向应力；J2进一步假定屈服不受静水压力影响，定义
+\[
+\mathbf s=\boldsymbol\sigma-\tfrac13\operatorname{tr}(\boldsymbol\sigma)I,
+\quad q=\sqrt{\tfrac32\mathbf s:\mathbf s},
+\quad \sigma_y(\alpha)=\sigma_{y0}+H\alpha,
+\quad f=q-\sigma_y(\alpha).
+\]
+$f\le0$表示允许应力状态；弹性试算$f^{\rm tr}>0$时需产生塑性流动，使更新后的应力回到屈服面。
+该条件不是由平衡方程推出，而是材料屈服及硬化假设。
+
+\subsection{材料更新与整体平衡}
+每一步先固定上一收敛步的$\varepsilon^p_n,\alpha_n$，用当前位移算总应变并进行弹性试算。
+塑性时采用径向返回：
+\[
+\Delta\alpha=\frac{q^{\rm tr}-\sigma_{y0}-H\alpha_n}{3G+H},\qquad
+\Delta\boldsymbol\varepsilon^p=\tfrac32\Delta\alpha\frac{\mathbf s^{\rm tr}}{q^{\rm tr}},
+\quad \alpha_{n+1}=\alpha_n+\Delta\alpha.
+\]
+分母的$3G$表示塑性流动使等效应力降低的速率，$H$表示屈服面扩大的速率。
+程序对返回映射求导得到一致切线，按$K_t=\sum_e\int B^{\mathsf T}C_tB\dd V$组装。
+每步用稀疏LU直接解法求Newton位移修正，配合回溯线搜索。
+\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}
+for load_step in prescribed_displacements:
+    impose_tip_displacement()
+    for iteration in Newton:
+        strain = B @ element_displacement
+        stress, trial_state, tangent = update(strain, committed_state)
+        internal_force, Kt = assemble(stress, tangent)
+        if free_residual_is_small():
+            commit(trial_state)
+            break
+        correction = solve(Kt_ff, -internal_force_f)
+        line_search(correction)
+\end{lstlisting}
+\end{minipage}
+材料状态只在整体平衡收敛后提交；Newton试算不能反复累积同一加载步的塑性。
+
+\subsection{工况与结果}
+保留原题端位移$0.1\,\mathrm m$，另外扩展至$0.5\,\mathrm m$，共50步，每步$0.01\,\mathrm m$。
+小应变、线性几何假设保持不变；该扩展不包含大转动或几何非线性。
+三套网格在$0.1\,\mathrm m$均未屈服，反力与原线弹性结果一致。
+\begin{table}[H]\centering
+\caption{端位移$0.5\,\mathrm m$时的弹塑性结果。首次塑性按离散加载步记录。}
+\input{assets/nonlinear_summary.tex}
+\end{table}
+\begin{figure}[H]\centering
+\includegraphics[width=.9\linewidth]{force_displacement.pdf}
+\caption{三套网格的反力—位移曲线；虚线为各网格初始弹性刚度的延长线。}
+\end{figure}
+\begin{figure}[H]\centering
+\includegraphics[width=.74\linewidth]{nonlinear_deflection.pdf}
+\caption{端位移$0.5\,\mathrm m$的中性轴挠度；弹性欧拉梁只作为对照。}
+\end{figure}
+\begin{figure}[H]\centering
+\includegraphics[width=.74\linewidth]{plastic_cloud.pdf}
+\caption{最细网格在端位移$0.5\,\mathrm m$时的轴向应力及等效塑性应变。
+每个单元以四个高斯点的均值填色，纵向比例作显示放大。}
+\end{figure}
+\begin{table}[H]\centering
+\caption{$0.5\,\mathrm m$时$(10,1)$的轴向应力；弹性欧拉梁对照为$196.875\,\mathrm{MPa}$。}
+\input{assets/nonlinear_point.tex}
+\end{table}
+塑性状态保存在高斯点。指定边界点应力由同一单元四个高斯点应力双线性外推，再将左右单元值平均。
+这与线弹性章节直接在顶点求导的方式不同，不能把两者的恢复差异当作材料非线性效应。
+此工况中指定点可能仍处于弹性区，反力曲线和塑性应变云图用于判断全梁是否出现塑性。
+线弹性梁不包含塑性，因此与其差异同时包含模型差异及网格误差。
+
+材料一致切线已用中心差分验证，弹性极限反力与原求解器核对；
+三套网格每一步均检查自由方程残差和总力平衡。最细网格最多5次Newton修正，
+全试验最大相对残差小于$10^{-8}$。最细网格改为100步后，终点反力为$3801.586\,\mathrm{kN}$，较50步变化约$0.0028\%$。不同网格首次发现塑性的位移不同，尚需更细网格及加载步长验证屈服起点。
+
+\clearpage\appendix
+\section{ID与IEN表}
+表中左右两组分别列出独立的节点或单元记录。
+ID下标$u,v$表示位移方向，$g_u,g_v$表示未缩减的全局自由度编号。
+已知位移按节点所在边界赋值：左端$u=v=0$，右端$v=-0.1\,\mathrm m$。
+IEN在正文定义为$4\times n_e$；下面每条记录对应其中一列，即一个单元。
+\setlength{\tabcolsep}{4pt}
+\input{assets/tables_8x2.tex}
+\clearpage
+\input{assets/tables_16x4.tex}
+\clearpage
+\input{assets/tables_32x8.tex}
+\end{document}
